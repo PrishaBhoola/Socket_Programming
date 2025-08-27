@@ -1,12 +1,60 @@
+#ifdef _WIN32
+    #include <winsock2.h>
+    #include <ws2tcpip.h>
+    #pragma comment(lib, "ws2_32.lib")
+    #define close closesocket
+    typedef int socklen_t;
+
+    // Fallback implementations for older MinGW versions
+    #ifndef INET_ADDRSTRLEN
+    #define INET_ADDRSTRLEN 16
+    #endif
+
+    // Check if inet_pton is available, if not provide fallback
+    #if !defined(inet_pton) && (_WIN32_WINNT < 0x0600)
+    int inet_pton_fallback(int af, const char *src, void *dst) {
+        if (af == AF_INET) {
+            unsigned long addr = inet_addr(src);
+            if (addr == INADDR_NONE && strcmp(src, "255.255.255.255") != 0) {
+                return 0; // Invalid format
+            }
+            memcpy(dst, &addr, sizeof(addr));
+            return 1; // Success
+        }
+        return -1; // Unsupported family
+    }
+    #define inet_pton inet_pton_fallback
+    #endif
+
+    // Check if inet_ntop is available, if not provide fallback
+    #if !defined(inet_ntop) && (_WIN32_WINNT < 0x0600)
+    const char* inet_ntop_fallback(int af, const void *src, char *dst, socklen_t size) {
+        if (af == AF_INET && size >= INET_ADDRSTRLEN) {
+            struct in_addr addr;
+            memcpy(&addr, src, sizeof(addr));
+            char* str = inet_ntoa(addr);
+            if (str) {
+                strcpy(dst, str);
+                return dst;
+            }
+        }
+        return NULL;
+    }
+    #define inet_ntop inet_ntop_fallback
+    #endif
+
+#else
+    #include <sys/socket.h>
+    #include <netinet/in.h>
+    #include <arpa/inet.h>
+    #include <unistd.h>
+#endif
+
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <vector>
 #include <string>
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
 #include <cstring>
 
 class WordServer {
@@ -16,8 +64,35 @@ private:
     int server_port;
     std::string words_filename;
 
+#ifdef _WIN32
+    WSADATA wsaData;
+    bool winsockInitialized;
+#endif
+
 public:
-    // Simple config loader (without JSON library)
+    WordServer() {
+#ifdef _WIN32
+        winsockInitialized = false;
+        // Initialize Winsock
+        int result = WSAStartup(MAKEWORD(2,2), &wsaData);
+        if (result != 0) {
+            std::cerr << "WSAStartup failed with error: " << result << std::endl;
+        } else {
+            winsockInitialized = true;
+            std::cout << "Winsock initialized successfully" << std::endl;
+        }
+#endif
+    }
+
+    ~WordServer() {
+#ifdef _WIN32
+        if (winsockInitialized) {
+            WSACleanup();
+        }
+#endif
+    }
+
+    // Load configuration from config.json
     bool loadConfig() {
         std::ifstream config_file("config.json");
         if (!config_file.is_open()) {
@@ -32,18 +107,31 @@ public:
                 size_t start = line.find(":") + 1;
                 size_t first_quote = line.find('"', start);
                 size_t second_quote = line.find('"', first_quote + 1);
-                server_ip = line.substr(first_quote + 1, second_quote - first_quote - 1);
+                if (first_quote != std::string::npos && second_quote != std::string::npos) {
+                    server_ip = line.substr(first_quote + 1, second_quote - first_quote - 1);
+                }
             }
             else if (line.find("server_port") != std::string::npos) {
                 size_t start = line.find(":") + 1;
                 std::string port_str = line.substr(start);
-                server_port = std::stoi(port_str);
+                // Extract numeric characters
+                std::string clean_port;
+                for (char c : port_str) {
+                    if (isdigit(c)) {
+                        clean_port += c;
+                    }
+                }
+                if (!clean_port.empty()) {
+                    server_port = std::stoi(clean_port);
+                }
             }
             else if (line.find("filename") != std::string::npos) {
                 size_t start = line.find(":") + 1;
                 size_t first_quote = line.find('"', start);
                 size_t second_quote = line.find('"', first_quote + 1);
-                words_filename = line.substr(first_quote + 1, second_quote - first_quote - 1);
+                if (first_quote != std::string::npos && second_quote != std::string::npos) {
+                    words_filename = line.substr(first_quote + 1, second_quote - first_quote - 1);
+                }
             }
         }
 
@@ -135,16 +223,31 @@ public:
 
     // Main server loop
     void run() {
+#ifdef _WIN32
+        if (!winsockInitialized) {
+            std::cerr << "Error: Winsock not initialized" << std::endl;
+            return;
+        }
+#endif
+
         // Create socket
+#ifdef _WIN32
+        SOCKET server_fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP);
+        if (server_fd == INVALID_SOCKET) {
+            std::cerr << "Error: Cannot create socket. Error: " << WSAGetLastError() << std::endl;
+            return;
+        }
+#else
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (server_fd < 0) {
             std::cerr << "Error: Cannot create socket" << std::endl;
             return;
         }
+#endif
 
         // Set socket options to reuse address
         int opt = 1;
-        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
+        if (setsockopt(server_fd, SOL_SOCKET, SO_REUSEADDR, (const char*)&opt, sizeof(opt)) < 0) {
             std::cerr << "Error: setsockopt failed" << std::endl;
             close(server_fd);
             return;
@@ -156,15 +259,37 @@ public:
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(server_port);
 
-        if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
-            std::cerr << "Error: Invalid server IP address" << std::endl;
-            close(server_fd);
-            return;
+        // Convert IP address - use simpler approach for Windows compatibility
+        if (server_ip == "0.0.0.0" || server_ip == "localhost") {
+            server_addr.sin_addr.s_addr = INADDR_ANY;
+            std::cout << "Binding to any available interface" << std::endl;
+        } else if (server_ip == "127.0.0.1") {
+            server_addr.sin_addr.s_addr = inet_addr("127.0.0.1");
+            std::cout << "Binding to localhost" << std::endl;
+        } else {
+            // Try inet_pton first, fallback to inet_addr
+            if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
+                // Fallback to inet_addr
+                unsigned long addr = inet_addr(server_ip.c_str());
+                if (addr == INADDR_NONE) {
+                    std::cout << "Invalid IP, using any interface" << std::endl;
+                    server_addr.sin_addr.s_addr = INADDR_ANY;
+                } else {
+                    server_addr.sin_addr.s_addr = addr;
+                    std::cout << "Binding to " << server_ip << std::endl;
+                }
+            } else {
+                std::cout << "Binding to " << server_ip << std::endl;
+            }
         }
 
         // Bind socket
         if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
-            std::cerr << "Error: Bind failed. Port may be in use." << std::endl;
+            std::cerr << "Error: Bind failed on port " << server_port;
+#ifdef _WIN32
+            std::cerr << ". Error: " << WSAGetLastError();
+#endif
+            std::cerr << std::endl;
             close(server_fd);
             return;
         }
@@ -176,28 +301,42 @@ public:
             return;
         }
 
-        std::cout << "Server listening on " << server_ip << ":" << server_port << std::endl;
+        std::cout << "Server listening on port " << server_port << std::endl;
 
         // Accept and handle connections
         while (true) {
             struct sockaddr_in client_addr;
             socklen_t client_len = sizeof(client_addr);
 
+#ifdef _WIN32
+            SOCKET client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+            if (client_fd == INVALID_SOCKET) {
+                std::cerr << "Error: Accept failed. Error: " << WSAGetLastError() << std::endl;
+                continue;
+            }
+#else
             int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
             if (client_fd < 0) {
                 std::cerr << "Error: Accept failed" << std::endl;
                 continue;
             }
+#endif
 
+            // Get client IP using fallback method
             char client_ip[INET_ADDRSTRLEN];
+#ifdef _WIN32
+            // Use inet_ntoa as fallback for older Windows
+            strcpy(client_ip, inet_ntoa(client_addr.sin_addr));
+#else
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
+#endif
             std::cout << "Client connected from " << client_ip << std::endl;
 
             // Read request from client
             char buffer[1024];
             memset(buffer, 0, sizeof(buffer));
 
-            ssize_t bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+            int bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
             if (bytes_read > 0) {
                 std::string request(buffer);
                 std::cout << "Received: " << request;
@@ -206,15 +345,22 @@ public:
                 std::string response = handleRequest(request);
                 std::cout << "Sending: " << response;
 
-                send(client_fd, response.c_str(), response.length(), 0);
+                send(client_fd, response.c_str(), (int)response.length(), 0);
+            }
+            else if (bytes_read == 0) {
+                std::cout << "Client disconnected" << std::endl;
             }
             else {
-                std::cout << "No data received from client" << std::endl;
+#ifdef _WIN32
+                std::cout << "recv failed. Error: " << WSAGetLastError() << std::endl;
+#else
+                std::cout << "recv failed" << std::endl;
+#endif
             }
 
             // Close client connection
             close(client_fd);
-            std::cout << "Client disconnected\n" << std::endl;
+            std::cout << "Client connection closed\n" << std::endl;
         }
 
         close(server_fd);
