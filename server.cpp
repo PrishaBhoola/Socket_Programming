@@ -1,13 +1,12 @@
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <arpa/inet.h>
-#include <unistd.h>
-
 #include <iostream>
 #include <fstream>
 #include <sstream>
 #include <vector>
 #include <string>
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <arpa/inet.h>
+#include <unistd.h>
 #include <cstring>
 
 class WordServer {
@@ -16,21 +15,33 @@ private:
     std::string server_ip;
     int server_port;
     std::string words_filename;
+    std::string config_file;
 
 public:
-    WordServer() = default;
-    ~WordServer() = default;
+    WordServer() : config_file("config.json") {}
 
-    // Load configuration from config.json
+    // Parse command line arguments
+    bool parseArgs(int argc, char* argv[]) {
+        for (int i = 1; i < argc; i++) {
+            std::string arg = argv[i];
+
+            if (arg == "--config" && i + 1 < argc) {
+                config_file = argv[++i];
+            }
+        }
+        return true;
+    }
+
+    // Load configuration from specified config file
     bool loadConfig() {
-        std::ifstream config_file("config.json");
-        if (!config_file.is_open()) {
-            std::cerr << "Error: Cannot open config.json" << std::endl;
+        std::ifstream config_file_stream(config_file);
+        if (!config_file_stream.is_open()) {
+            std::cerr << "Error: Cannot open " << config_file << std::endl;
             return false;
         }
 
         std::string line;
-        while (std::getline(config_file, line)) {
+        while (std::getline(config_file_stream, line)) {
             if (line.find("server_ip") != std::string::npos) {
                 size_t start = line.find(":") + 1;
                 size_t first_quote = line.find('"', start);
@@ -77,6 +88,7 @@ public:
         if (std::getline(words_file, line)) {
             std::stringstream ss(line);
             std::string word;
+
             while (std::getline(ss, word, ',')) {
                 word.erase(0, word.find_first_not_of(" \t"));
                 word.erase(word.find_last_not_of(" \t") + 1);
@@ -111,6 +123,7 @@ public:
 
             std::string response;
             int words_sent = 0;
+
             for (int i = p; i < (int)words.size() && words_sent < k; i++) {
                 if (words_sent > 0) response += ",";
                 response += words[i];
@@ -145,7 +158,7 @@ public:
             return;
         }
 
-        struct sockaddr_in server_addr {};
+        struct sockaddr_in server_addr{};
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(server_port);
 
@@ -173,7 +186,7 @@ public:
         std::cout << "Server listening on port " << server_port << std::endl;
 
         while (true) {
-            struct sockaddr_in client_addr {};
+            struct sockaddr_in client_addr{};
             socklen_t client_len = sizeof(client_addr);
 
             int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
@@ -186,13 +199,16 @@ public:
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
             std::cout << "Client connected from " << client_ip << std::endl;
 
-            char buffer[1024] {};
+            char buffer[1024]{};
             int bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+
             if (bytes_read > 0) {
                 std::string request(buffer);
                 std::cout << "Received: " << request;
+
                 std::string response = handleRequest(request);
                 std::cout << "Sending: " << response;
+
                 send(client_fd, response.c_str(), response.length(), 0);
             } else if (bytes_read == 0) {
                 std::cout << "Client disconnected" << std::endl;
@@ -208,8 +224,15 @@ public:
     }
 };
 
-int main() {
+int main(int argc, char* argv[]) {
     WordServer server;
+
+    // Parse command line arguments
+    if (!server.parseArgs(argc, argv)) {
+        std::cerr << "Error parsing arguments" << std::endl;
+        return 1;
+    }
+
     std::cout << "Starting word counting server..." << std::endl;
 
     if (!server.loadConfig()) return 1;

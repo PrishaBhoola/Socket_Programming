@@ -1,7 +1,6 @@
-# Makefile for Linux/WSL Socket Programming
+# Makefile for Part 1: Socket Programming Assignment
 CC = g++
 CFLAGS = -std=c++11 -Wall -Wextra
-LIBS = 
 
 # Executables
 SERVER = server
@@ -17,51 +16,43 @@ build: $(SERVER) $(CLIENT)
 
 $(SERVER): $(SERVER_SRC)
 	@echo "Compiling server..."
-	$(CC) $(CFLAGS) -o $(SERVER) $(SERVER_SRC) $(LIBS)
-	@echo "Server compiled successfully!"
+	$(CC) $(CFLAGS) -o $(SERVER) $(SERVER_SRC)
 
 $(CLIENT): $(CLIENT_SRC)  
 	@echo "Compiling client..."
-	$(CC) $(CFLAGS) -o $(CLIENT) $(CLIENT_SRC) $(LIBS)
-	@echo "Client compiled successfully!"
+	$(CC) $(CFLAGS) -o $(CLIENT) $(CLIENT_SRC)
 
-# Run a single iteration
+# Run experiments using the official starter code approach
+plot: build
+	@echo "=========================================="
+	@echo "  Part 1: Socket Programming Experiments  "
+	@echo "=========================================="
+	@echo "Ensuring Mininet config..."
+	@make setup-mininet
+	@echo "Running experiments (this may take a few minutes)..."
+	@sudo python3 run_experiments.py
+	@echo "Generating plot..."
+	@python3 plot_results.py
+	@echo "✅ EXPERIMENT COMPLETE!"
+	@echo "📊 Raw results: results.csv"
+	@echo "📈 Plot: p1_plot.png"
+	@echo "📁 Ready for submission!"
+
+# Run a single iteration (LOCAL TESTING)
 run: build
+	@echo "Setting up localhost config for testing..."
+	@make setup-local
 	@echo "Starting server in background..."
-	@./$(SERVER) &
+	@./$(SERVER) --config config.json &
 	@sleep 2
 	@echo "Running client..."
-	@./$(CLIENT)
+	@./$(CLIENT) --config config.json
 	@echo "Stopping server..."
 	@pkill -f $(SERVER) || echo "Server stopped"
 
-# Run with timing for experiments
-run-timing: build
-	@echo "Starting server in background..."
-	@./$(SERVER) &
-	@sleep 2
-	@echo "Running client with timing..."
-	@./$(CLIENT) --timing
-	@echo "Stopping server..."
-	@pkill -f $(SERVER) || echo "Server stopped"
-
-# Clean compiled files
-clean:
-	@rm -f $(SERVER) $(CLIENT)
-	@echo "Cleaned executables"
-
-# Test connection
-test: build
-	@echo "Testing client-server connection..."
-	@./$(SERVER) &
-	@sleep 2
-	@./$(CLIENT) || echo "Client test completed"
-	@pkill -f $(SERVER) || echo "Server stopped"
-	@echo "Test finished"
-
-# Setup local config for testing
+# Setup for local testing (localhost)
 setup-local:
-	@echo Creating local configuration...
+	@echo "Creating localhost configuration..."
 	@echo '{' > config.json
 	@echo '    "server_ip": "127.0.0.1",' >> config.json
 	@echo '    "server_port": 8080,' >> config.json
@@ -70,17 +61,46 @@ setup-local:
 	@echo '    "k": 5,' >> config.json
 	@echo '    "num_repetitions": 5' >> config.json
 	@echo '}' >> config.json
-	@echo Local config created!
+	@echo "Local config created (127.0.0.1:8080)!"
 
-# Help target
+# Setup for Mininet experiments
+setup-mininet:
+	@echo "Creating Mininet configuration..."
+	@echo '{' > config.json
+	@echo '    "server_ip": "10.0.0.2",' >> config.json
+	@echo '    "server_port": 5000,' >> config.json
+	@echo '    "filename": "words.txt",' >> config.json
+	@echo '    "p": 0,' >> config.json
+	@echo '    "k": 5,' >> config.json
+	@echo '    "num_repetitions": 5' >> config.json
+	@echo '}' >> config.json
+	@echo "Mininet config created (10.0.0.2:5000)!"
+
+# Test the topology
+test-topo:
+	@python3 topo_wordcount.py
+
+# Clean files
+clean:
+	@rm -f $(SERVER) $(CLIENT) results.csv p1_plot.png part1_results.csv
+	@echo "Cleaned files"
+
+# Help
 help:
-	@echo Available targets:
-	@echo "  build       - Compile server and client"
-	@echo "  run         - Run one iteration of client-server"
-	@echo "  run-timing  - Run client with timing measurement"
-	@echo "  test        - Basic connection test"
-	@echo "  clean       - Remove compiled executables"
-	@echo "  setup-local - Create local testing configuration"
-	@echo "  help        - Show this help"
+	@echo "Assignment Part 1 Targets:"
+	@echo "========================="
+	@echo "REQUIRED:"
+	@echo "  build           - Compile programs"
+	@echo "  run             - Single test (localhost)"
+	@echo "  plot            - Run experiments + generate plot (Mininet)"
+	@echo ""
+	@echo "SETUP:"
+	@echo "  setup-local     - Config for localhost testing"
+	@echo "  setup-mininet   - Config for Mininet experiments"
+	@echo "  test-topo       - Test network topology"
+	@echo ""
+	@echo "WORKFLOW:"
+	@echo "  For local testing: make run"
+	@echo "  For experiments: make plot"
 
-.PHONY: build run run-timing clean test setup-local help
+.PHONY: build run plot setup-local setup-mininet test-topo clean help

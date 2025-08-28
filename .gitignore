@@ -3,3 +3,8 @@ server.exe
 client.exe
 server
 client
+p1_plot.png
+part1_results.csv
+results.csv
+myenv
+__pycache__
