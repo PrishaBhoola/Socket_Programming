@@ -21,7 +21,9 @@ private:
     bool quiet_mode;
 
 public:
-    WordClient() : config_file("config.json"), quiet_mode(false) {}
+    // FIXED: Initialize all member variables with defaults
+    WordClient() : config_file("demo_config.json"), quiet_mode(false), 
+                   server_ip("10.0.0.2"), server_port(5000), p(0), k(5) {}
 
     // Parse command line arguments
     bool parseArgs(int argc, char* argv[]) {
@@ -44,9 +46,11 @@ public:
         }
         return true;
     }
+
     bool get_quiet_mode(){
         return this->quiet_mode;
     }
+
     // Load configuration from specified config file
     bool loadConfig() {
         std::ifstream config_file_stream(config_file);

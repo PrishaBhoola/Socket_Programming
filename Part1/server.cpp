@@ -1,8 +1,8 @@
 #include <iostream>
 #include <fstream>
 #include <sstream>
-#include <vector>
 #include <string>
+#include <vector>
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
@@ -18,7 +18,10 @@ private:
     std::string config_file;
 
 public:
-    WordServer() : config_file("config.json") {}
+    // FIXED: Initialize all member variables with defaults
+    WordServer() : config_file("demo_config.json"), 
+                   server_ip("10.0.0.2"), server_port(5000), 
+                   words_filename("words.txt") {}
 
     // Parse command line arguments
     bool parseArgs(int argc, char* argv[]) {
@@ -109,6 +112,7 @@ public:
             return "EOF\n";
         }
 
+        // Clean up k_str (remove newlines, spaces, etc.)
         k_str.erase(k_str.find_last_not_of("\n\r \t") + 1);
 
         try {
@@ -117,6 +121,7 @@ public:
 
             std::cout << "Request: p=" << p << ", k=" << k << std::endl;
 
+            // Validate offset
             if (p < 0 || p >= (int)words.size()) {
                 return "EOF\n";
             }
@@ -124,12 +129,14 @@ public:
             std::string response;
             int words_sent = 0;
 
+            // Add words starting from position p
             for (int i = p; i < (int)words.size() && words_sent < k; i++) {
                 if (words_sent > 0) response += ",";
                 response += words[i];
                 words_sent++;
             }
 
+            // Add EOF if we couldn't send k words
             if (words_sent < k) {
                 if (words_sent > 0) response += ",";
                 response += "EOF";
@@ -137,8 +144,8 @@ public:
 
             response += "\n";
             return response;
-        }
-        catch (...) {
+
+        } catch (...) {
             return "EOF\n";
         }
     }
@@ -188,8 +195,8 @@ public:
         while (true) {
             struct sockaddr_in client_addr{};
             socklen_t client_len = sizeof(client_addr);
-
             int client_fd = accept(server_fd, (struct sockaddr*)&client_addr, &client_len);
+
             if (client_fd < 0) {
                 std::cerr << "Error: Accept failed" << std::endl;
                 continue;
