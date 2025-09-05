@@ -1,10 +1,12 @@
+// CORRECTED server.cpp - Enhanced to support file size queries
 #include <iostream>
 #include <fstream>
-#include <sstream>
-#include <string>
 #include <vector>
+#include <string>
+#include <sstream>
 #include <sys/socket.h>
 #include <netinet/in.h>
+#include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <unistd.h>
 #include <cstring>
@@ -18,16 +20,13 @@ private:
     std::string config_file;
 
 public:
-    // FIXED: Initialize all member variables with defaults
-    WordServer() : config_file("demo_config.json"), 
-                   server_ip("10.0.0.2"), server_port(5000), 
-                   words_filename("words.txt") {}
+    WordServer() : config_file("config.json"),
+                  server_ip("10.0.0.2"), server_port(5000),
+                  words_filename("words.txt") {}
 
-    // Parse command line arguments
     bool parseArgs(int argc, char* argv[]) {
         for (int i = 1; i < argc; i++) {
             std::string arg = argv[i];
-
             if (arg == "--config" && i + 1 < argc) {
                 config_file = argv[++i];
             }
@@ -35,7 +34,6 @@ public:
         return true;
     }
 
-    // Load configuration from specified config file
     bool loadConfig() {
         std::ifstream config_file_stream(config_file);
         if (!config_file_stream.is_open()) {
@@ -52,8 +50,7 @@ public:
                 if (first_quote != std::string::npos && second_quote != std::string::npos) {
                     server_ip = line.substr(first_quote + 1, second_quote - first_quote - 1);
                 }
-            }
-            else if (line.find("server_port") != std::string::npos) {
+            } else if (line.find("server_port") != std::string::npos) {
                 size_t start = line.find(":") + 1;
                 std::string port_str = line.substr(start);
                 std::string clean_port;
@@ -63,8 +60,7 @@ public:
                 if (!clean_port.empty()) {
                     server_port = std::stoi(clean_port);
                 }
-            }
-            else if (line.find("filename") != std::string::npos) {
+            } else if (line.find("filename") != std::string::npos) {
                 size_t start = line.find(":") + 1;
                 size_t first_quote = line.find('"', start);
                 size_t second_quote = line.find('"', first_quote + 1);
@@ -79,7 +75,6 @@ public:
         return true;
     }
 
-    // Load words from words.txt file
     bool loadWords() {
         std::ifstream words_file(words_filename);
         if (!words_file.is_open()) {
@@ -91,7 +86,6 @@ public:
         if (std::getline(words_file, line)) {
             std::stringstream ss(line);
             std::string word;
-
             while (std::getline(ss, word, ',')) {
                 word.erase(0, word.find_first_not_of(" \t"));
                 word.erase(word.find_last_not_of(" \t") + 1);
@@ -100,57 +94,76 @@ public:
         }
 
         std::cout << "Loaded " << words.size() << " words from " << words_filename << std::endl;
+        if (!words.empty()) {
+            std::cout << "Sample words: ";
+            for (int i = 0; i < std::min(5, (int)words.size()); i++) {
+                std::cout << words[i] << " ";
+            }
+            std::cout << "..." << std::endl;
+        }
         return !words.empty();
     }
 
-    // Handle client request and generate response
     std::string handleRequest(const std::string& request) {
-        std::stringstream ss(request);
-        std::string p_str, k_str;
+        std::string clean_request = request;
+        clean_request.erase(clean_request.find_last_not_of("\n\r \t") + 1);
 
-        if (!std::getline(ss, p_str, ',') || !std::getline(ss, k_str)) {
-            return "EOF\n";
+        // Handle SIZE request
+        if (clean_request == "SIZE") {
+            std::string response = "TOTAL:" + std::to_string(words.size()) + "\n";
+            std::cout << "SIZE request: returning " << words.size() << " total words" << std::endl;
+            return response;
         }
 
-        // Clean up k_str (remove newlines, spaces, etc.)
-        k_str.erase(k_str.find_last_not_of("\n\r \t") + 1);
+        // Handle standard p,k request
+        std::stringstream ss(clean_request);
+        std::string p_str, k_str;
+        if (!std::getline(ss, p_str, ',') || !std::getline(ss, k_str)) {
+            return "ERROR:Invalid request format\n";
+        }
 
         try {
             int p = std::stoi(p_str);
             int k = std::stoi(k_str);
 
-            std::cout << "Request: p=" << p << ", k=" << k << std::endl;
+            std::cout << "Chunk request: offset=" << p << ", count=" << k 
+                     << " (total_words=" << words.size() << ")" << std::endl;
 
             // Validate offset
-            if (p < 0 || p >= (int)words.size()) {
+            if (p < 0) {
+                return "ERROR:Invalid offset\n";
+            }
+
+            if (p >= (int)words.size()) {
                 return "EOF\n";
             }
 
             std::string response;
             int words_sent = 0;
 
-            // Add words starting from position p
+            // Send words starting from position p
             for (int i = p; i < (int)words.size() && words_sent < k; i++) {
                 if (words_sent > 0) response += ",";
                 response += words[i];
                 words_sent++;
             }
 
-            // Add EOF if we couldn't send k words
-            if (words_sent < k) {
+            // Add EOF if we've reached the end of the file
+            if (p + words_sent >= (int)words.size()) {
                 if (words_sent > 0) response += ",";
                 response += "EOF";
             }
 
             response += "\n";
+
+            std::cout << "Sent " << words_sent << " words (bytes: " << response.length() << ")" << std::endl;
             return response;
 
         } catch (...) {
-            return "EOF\n";
+            return "ERROR:Invalid parameters\n";
         }
     }
 
-    // Main server loop
     void run() {
         int server_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (server_fd < 0) {
@@ -168,15 +181,7 @@ public:
         struct sockaddr_in server_addr{};
         server_addr.sin_family = AF_INET;
         server_addr.sin_port = htons(server_port);
-
-        if (server_ip == "0.0.0.0" || server_ip == "localhost") {
-            server_addr.sin_addr.s_addr = INADDR_ANY;
-        } else {
-            if (inet_pton(AF_INET, server_ip.c_str(), &server_addr.sin_addr) <= 0) {
-                std::cerr << "Invalid IP. Using any interface." << std::endl;
-                server_addr.sin_addr.s_addr = INADDR_ANY;
-            }
-        }
+        server_addr.sin_addr.s_addr = INADDR_ANY;
 
         if (bind(server_fd, (struct sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
             std::cerr << "Error: Bind failed on port " << server_port << std::endl;
@@ -191,6 +196,7 @@ public:
         }
 
         std::cout << "Server listening on port " << server_port << std::endl;
+        std::cout << "Ready to serve " << words.size() << " words" << std::endl;
 
         while (true) {
             struct sockaddr_in client_addr{};
@@ -202,20 +208,19 @@ public:
                 continue;
             }
 
+            // Set TCP_NODELAY for immediate response
+            int nodelay = 1;
+            setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
+
             char client_ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &client_addr.sin_addr, client_ip, INET_ADDRSTRLEN);
-            std::cout << "Client connected from " << client_ip << std::endl;
 
             char buffer[1024]{};
             int bytes_read = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
 
             if (bytes_read > 0) {
                 std::string request(buffer);
-                std::cout << "Received: " << request;
-
                 std::string response = handleRequest(request);
-                std::cout << "Sending: " << response;
-
                 send(client_fd, response.c_str(), response.length(), 0);
             } else if (bytes_read == 0) {
                 std::cout << "Client disconnected" << std::endl;
@@ -224,7 +229,6 @@ public:
             }
 
             close(client_fd);
-            std::cout << "Client connection closed\n" << std::endl;
         }
 
         close(server_fd);
@@ -234,14 +238,12 @@ public:
 int main(int argc, char* argv[]) {
     WordServer server;
 
-    // Parse command line arguments
     if (!server.parseArgs(argc, argv)) {
         std::cerr << "Error parsing arguments" << std::endl;
         return 1;
     }
 
-    std::cout << "Starting word counting server..." << std::endl;
-
+    std::cout << "Starting enhanced word server..." << std::endl;
     if (!server.loadConfig()) return 1;
     if (!server.loadWords()) return 1;
 

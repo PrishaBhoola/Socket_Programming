@@ -1,7 +1,3 @@
-#!/usr/bin/env python3
-# Socket Programming Assignment - Experiment Runner
-# Completed version of the starter code
-
 import re
 import time
 import csv
@@ -10,7 +6,7 @@ from pathlib import Path
 from topo_wordcount import make_net
 
 # Config
-K_VALUES = [1, 2, 5, 10, 20, 50, 100]
+K_VALUES = [1, 2, 4, 8, 12, 16, 20, 24, 32, 48]
 RUNS_PER_K = 5
 SERVER_CMD = "./server --config config.json"
 CLIENT_CMD_TMPL = "./client --config config.json --quiet"
@@ -45,9 +41,6 @@ def modify_config(key, value):
     print(f"Updated config: {key} = {value}")
 
 def main():
-    print("Starting Socket Programming Experiments")
-    print("=" * 40)
-
     # Prepare CSV
     if not RESULTS_CSV.exists():
         with RESULTS_CSV.open("w", newline="") as f:
