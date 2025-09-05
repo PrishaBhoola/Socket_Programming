@@ -1,77 +1,84 @@
-# Makefile for concurrent client-server experiment
+.PHONY: run plot clean setup local mininet help
 
-# Python interpreter
-PYTHON = python3
-
-# Configuration file
+# Load configuration
 CONFIG_FILE = config.json
+NUM_CLIENTS = $(shell python3 -c "import json; print(json.load(open('$(CONFIG_FILE)'))['num_clients'])" 2>/dev/null || echo "5")
+NUM_REPETITIONS = $(shell python3 -c "import json; print(json.load(open('$(CONFIG_FILE)'))['num_repetitions'])" 2>/dev/null || echo "5")
 
-.PHONY: all clean run plot setup kill-server check-config
+# Default target
+all: help
 
-all: setup run
+# Setup requirements and generate test data
+setup:
+	@echo "Setting up experiment environment..."
+	@python3 -c "import socket, json, threading, time, sys, subprocess, csv" 2>/dev/null || \
+	(echo "Missing required packages for basic functionality"; exit 1)
+	@python3 -c "import pandas, matplotlib, numpy, scipy" 2>/dev/null || \
+	echo "Warning: Missing plotting packages. Install with: pip3 install pandas matplotlib numpy scipy"
+	@python3 -c "import mininet" 2>/dev/null || \
+	echo "Warning: Mininet not found. Install with: sudo apt-get install mininet"
+	@echo "Setup complete!"
 
-# Setup: create necessary files and check configuration
-setup: check-config words.txt plot_results.py run_experiments.py
+# Run single experiment locally (for testing)
+local: setup
+	@echo "Running local experiment with $(NUM_CLIENTS) clients..."
+	@python3 generate_words.py local
+	@cp config_local.json config.json
+	@python3 server.py &
+	@SERVER_PID=$$!; \
+	sleep 2; \
+	python3 run_single_experiment.py; \
+	kill $$SERVER_PID 2>/dev/null || true
 
-check-config:
-	@if [ ! -f $(CONFIG_FILE) ]; then \
-		echo "Error: $(CONFIG_FILE) not found!"; \
-		echo "Required keys: server_ip, server_port, p, k, filename, num_clients, num_repetitions"; \
-		exit 1; \
-	fi
-	@$(PYTHON) -c "import json; config=json.load(open('config.json')); required=['server_ip','server_port','p','k','filename','num_clients','num_repetitions']; missing=[k for k in required if k not in config]; print('Missing keys:', missing) if missing else print('All required keys present ✓'); exit(1 if missing else 0)"
+# Run single experiment in Mininet
+run: setup
+	@echo "Running Mininet experiment with $(NUM_CLIENTS) clients..."
+	@sudo python3 mininet_topology.py
 
-words.txt: check-config
-	@$(PYTHON) -c "import json; config=json.load(open('config.json')); print(','.join([f'word{i}' for i in range(1000)]))" > $$($(PYTHON) -c "import json; print(json.load(open('config.json'))['filename'])")
+# Run experiments with varying number of clients and generate plot (Mininet)
+plot: setup
+	@echo "Running Mininet experiments with $(NUM_REPETITIONS) repetitions each..."
+	@sudo python3 mininet_topology.py plot
+	@python3 plot_results.py
 
-# # Kill any existing server processes
-# kill-server:
-# 	@echo "Killing existing server processes..."
-# 	@pkill -f "python.*server.py" 2>/dev/null || true
-# 	@sleep 1
+# Run experiments locally (for development/testing)
+plot-local: setup
+	@echo "Running local experiments with $(NUM_REPETITIONS) repetitions each..."
+	@python3 generate_words.py local
+	@cp config_local.json config.json
+	@python3 run_experiments.py
+	@python3 plot_results.py
 
-# Run single experiment with number of clients from config.json
-run: setup kill-server
-	@echo "Starting single experiment..."
-	@$(PYTHON) -c "import json, subprocess, time, os; \
-		config = json.load(open('config.json')); \
-		num_clients = config['num_clients']; \
-		print(f'Running with {num_clients} clients...'); \
-		server = subprocess.Popen(['$(PYTHON)', 'server.py']); \
-		time.sleep(2); \
-		clients = [subprocess.Popen(['$(PYTHON)', 'client.py']) for _ in range(num_clients)]; \
-		[c.wait() for c in clients]; \
-		server.terminate(); \
-		print('Experiment completed.')"
-
-# Run experiments with varying number of clients and generate plot
-PYTHON := python3
-
-plot: setup kill-server
-	@echo "Running plotting experiments..."
-	@$(PYTHON) run_experiments.py
-	@$(PYTHON) plot_results.py
-
-# Clean up generated files (keep config.json as it's provided)
+# Clean generated files
 clean:
-	@echo "Cleaning up..."
-	@rm -f words.txt results.csv plot_results.py run_experiments.py p2_plot.png
-	@$(MAKE) kill-server
-	@echo "Note: config.json preserved (provided file)"
+	@echo "Cleaning generated files..."
+	@rm -f results.csv p2_plot.png
+	@rm -f config_local.json config_mininet.json
+	@rm -f words.txt
+	@sudo mn -c 2>/dev/null || true
 
-# Help target
+# Test Mininet connectivity
+test-mininet:
+	@echo "Testing Mininet setup..."
+	@sudo python3 -c "from mininet.net import Mininet; from mininet.topo import SingleSwitchTopo; net = Mininet(SingleSwitchTopo(2)); net.start(); print('Mininet working!'); net.stop()"
+
+# Help
 help:
+	@echo "Word Counter Concurrent Performance Analysis"
+	@echo "=========================================="
+	@echo ""
 	@echo "Available targets:"
-	@echo "  setup     - Check for config.json and create sample data files"
-	@echo "  run       - Run single experiment (uses num_clients from config.json)"
-	@echo "  plot      - Run experiments with varying clients and generate plot"
-	@echo "  clean     - Remove generated files and kill server (preserves config.json)"
-	@echo "  kill-server - Kill any running server processes"
+	@echo "  setup       - Install requirements and generate test data"
+	@echo "  run         - Run single experiment in Mininet ($(NUM_CLIENTS) clients)"
+	@echo "  plot        - Run experiments with varying clients in Mininet and generate plot"
+	@echo "  local       - Run single experiment locally (for testing)"
+	@echo "  plot-local  - Run experiments locally and generate plot (for testing)"
+	@echo "  test-mininet- Test if Mininet is working"
+	@echo "  clean       - Remove generated files"
+	@echo "  help        - Show this help"
 	@echo ""
-	@echo "Prerequisites:"
-	@echo "  - config.json must be provided with required keys"
-	@echo "  - Python packages: pandas, matplotlib"
+	@echo "Current configuration:"
+	@echo "  Clients: $(NUM_CLIENTS)"
+	@echo "  Repetitions: $(NUM_REPETITIONS)"
 	@echo ""
-	@echo "Examples:"
-	@echo "  make run"
-	@echo "  make plot"
+	@echo "Note: 'run' and 'plot' require sudo for Mininet"
