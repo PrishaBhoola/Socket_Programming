@@ -1,155 +1,127 @@
-import pandas as pd
+import csv
 import matplotlib.pyplot as plt
 import numpy as np
-import sys
-import os
-from scipy import stats
+import argparse
+from pathlib import Path
+import json
 
-def calculate_confidence_interval(data, confidence=0.95):
-    """Calculate confidence interval for the mean."""
-    n = len(data)
-    mean = np.mean(data)
-    sem = stats.sem(data)  # Standard error of the mean
-    h = sem * stats.t.ppf((1 + confidence) / 2., n-1)  # t-distribution
-    return mean - h, mean + h
+def load_results(results_file):
+    if not Path(results_file).exists():
+        print(f"Results file not found: {results_file}")
+        return None
 
-def plot_results():
-    if not os.path.exists('results.csv'):
-        print("Error: results.csv not found.")
-        print("Run 'python3 run_experiments.py' first to generate results.")
-        sys.exit(1)
-    
-    try:
-        # Read results
-        df = pd.read_csv('results.csv')
-        
-        if df.empty:
-            print("Error: results.csv is empty.")
-            sys.exit(1)
-        
-        # Calculate statistics for each client count
-        stats_data = []
-        for clients in sorted(df['clients'].unique()):
-            client_data = df[df['clients'] == clients]['completion_time']
-            
-            mean_time = client_data.mean()
-            std_time = client_data.std()
-            min_time = client_data.min()
-            max_time = client_data.max()
-            
-            # Calculate 95% confidence interval
-            ci_lower, ci_upper = calculate_confidence_interval(client_data)
-            
-            stats_data.append({
-                'clients': clients,
-                'mean': mean_time,
-                'std': std_time,
-                'min': min_time,
-                'max': max_time,
-                'ci_lower': ci_lower,
-                'ci_upper': ci_upper,
-                'count': len(client_data)
-            })
-        
-        stats_df = pd.DataFrame(stats_data)
-        
-        # Create the plot
-        plt.figure(figsize=(12, 8))
-        
-        # Plot mean with confidence intervals
-        plt.errorbar(stats_df['clients'], stats_df['mean'], 
-                    yerr=[stats_df['mean'] - stats_df['ci_lower'], 
-                          stats_df['ci_upper'] - stats_df['mean']], 
-                    marker='o', markersize=8, linewidth=2, capsize=5,
-                    label='Mean ± 95% CI', color='blue', capthick=2)
-        
-        # Plot min-max range as shaded area
-        plt.fill_between(stats_df['clients'], stats_df['min'], stats_df['max'], 
-                        alpha=0.2, color='lightblue', label='Min-Max Range')
-        
-        # Plot individual data points
-        plt.scatter(df['clients'], df['completion_time'], 
-                   alpha=0.6, color='red', s=30, label='Individual Runs')
-        
-        # Formatting
-        plt.xlabel('Number of Concurrent Clients', fontsize=12)
-        plt.ylabel('Completion Time (ms)', fontsize=12)
-        plt.title('Server Performance vs Number of Concurrent Clients', fontsize=14, pad=20)
-        plt.grid(True, alpha=0.3)
-        plt.legend(loc='upper left')
-        
-        # Set x-axis ticks to show all client counts tested
-        plt.xticks(sorted(df['clients'].unique()))
-        
-        # Add statistics box
-        repetitions = len(df[df['clients'] == df['clients'].iloc[0]])
-        total_experiments = len(df)
-        textstr = f"Repetitions per test: {repetitions}\nTotal experiments: {total_experiments}"
-        props = dict(boxstyle='round', facecolor='wheat', alpha=0.8)
-        plt.text(0.02, 0.98, textstr, transform=plt.gca().transAxes, fontsize=10,
-                verticalalignment='top', bbox=props)
-        
-        plt.tight_layout()
-        plt.savefig('p2_plot.png', dpi=300, bbox_inches='tight')
-        plt.close()
-        
-        print("Plot saved as p2_plot.png")
-        
-        # Print detailed statistics
-        print("\n" + "="*70)
-        print("DETAILED PERFORMANCE ANALYSIS")
-        print("="*70)
-        print(f"{'Clients':<8} {'Mean (ms)':<12} {'Std (ms)':<12} {'95% CI':<20} {'Min (ms)':<10} {'Max (ms)':<10}")
-        print("-"*70)
-        
-        for _, row in stats_df.iterrows():
-            clients = int(row['clients'])
-            mean_time = row['mean']
-            std_time = row['std']
-            ci_range = f"[{row['ci_lower']:.1f}, {row['ci_upper']:.1f}]"
-            min_time = row['min']
-            max_time = row['max']
-            
-            print(f"{clients:<8} {mean_time:<12.2f} {std_time:<12.2f} {ci_range:<20} {min_time:<10.2f} {max_time:<10.2f}")
-        
-        # Analysis observations
-        print("\n" + "="*70)
-        print("OBSERVATIONS")
-        print("="*70)
-        
-        # Check if completion time increases with more clients
-        first_mean = stats_df.iloc[0]['mean']
-        last_mean = stats_df.iloc[-1]['mean']
-        percent_increase = ((last_mean - first_mean) / first_mean) * 100
-        
-        print(f"• Completion time with 1 client: {first_mean:.2f} ms")
-        print(f"• Completion time with {int(stats_df.iloc[-1]['clients'])} clients: {last_mean:.2f} ms")
-        print(f"• Overall increase: {percent_increase:+.1f}%")
-        
-        if percent_increase > 10:
-            print("• SIGNIFICANT INCREASE: Completion time increases substantially with more clients")
-            print("  This suggests the server processes requests sequentially (first-come-first-serve)")
-        elif percent_increase > 0:
-            print("• MODERATE INCREASE: Some performance degradation with more clients")
-        else:
-            print("• NO SIGNIFICANT INCREASE: Performance remains relatively constant")
-        
-        # Check for linear relationship
-        correlation = np.corrcoef(stats_df['clients'], stats_df['mean'])[0, 1]
-        print(f"• Correlation between client count and completion time: {correlation:.3f}")
-        
-        if correlation > 0.8:
-            print("  Strong positive correlation - likely sequential processing")
-        elif correlation > 0.5:
-            print("  Moderate positive correlation - some queuing effects")
-        else:
-            print("  Weak correlation - good concurrent handling")
-            
-    except Exception as e:
-        print(f"Error generating plot: {e}")
-        import traceback
-        traceback.print_exc()
-        sys.exit(1)
+    results_by_clients = {}
+
+    with open(results_file, 'r') as f:
+        reader = csv.DictReader(f)
+        for row in reader:
+            num_clients = int(row['num_clients'])
+            avg_time = float(row['avg_completion_time'])
+            success_rate = int(row['successful_clients']) / int(row['total_clients'])
+
+            if avg_time > 0:  
+                if num_clients not in results_by_clients:
+                    results_by_clients[num_clients] = {
+                        'times': [], 
+                        'success_rates': []
+                    }
+
+                results_by_clients[num_clients]['times'].append(avg_time)
+                results_by_clients[num_clients]['success_rates'].append(success_rate)
+
+    return results_by_clients
+
+def calculate_statistics(results_by_clients):
+    stats = {}
+
+    for num_clients, data in results_by_clients.items():
+        times = data['times']
+        success_rates = data['success_rates']
+
+        if times:
+            stats[num_clients] = {
+                'avg_time': np.mean(times),
+                'std_time': np.std(times),
+                'min_time': np.min(times),
+                'max_time': np.max(times),
+                'avg_success_rate': np.mean(success_rates),
+                'num_samples': len(times)
+            }
+
+    return stats
+
+def create_completion_time_plot(stats, output_file='completion_time_plot.png'):
+    client_counts = sorted(stats.keys())
+    avg_times = [stats[c]['avg_time'] for c in client_counts]
+    std_times = [stats[c]['std_time'] for c in client_counts]
+
+    plt.figure(figsize=(12, 8))
+
+    plt.errorbar(client_counts, avg_times, yerr=std_times,
+                marker='o', capsize=5, capthick=2, linewidth=2, markersize=8,
+                color='blue', label='Average completion time')
+
+    if len(client_counts) >= 3:
+        z = np.polyfit(client_counts, avg_times, 2)  
+        p = np.poly1d(z)
+
+        x_trend = np.linspace(min(client_counts), max(client_counts), 100)
+        y_trend = p(x_trend)
+
+        plt.plot(x_trend, y_trend, '--', alpha=0.7, color='red',
+                label=f'Trend (R² = {calculate_r_squared(client_counts, avg_times, p):.3f})')
+
+    plt.xlabel('Number of Concurrent Clients', fontsize=12)
+    plt.ylabel('Average File Download Time (ms)', fontsize=12)
+    plt.title('Concurrent File Download Performance\nServer Processing: FIFO Request Queue', fontsize=14)
+    plt.grid(True, alpha=0.3)
+    plt.legend()
+
+    # Add value annotations
+    for x, y in zip(client_counts, avg_times):
+        plt.annotate(f'{y:.0f}ms', (x, y), 
+                    textcoords="offset points", xytext=(0,15), ha='center',
+                    fontsize=9)
+
+    plt.tight_layout()
+    plt.savefig(output_file, dpi=300, bbox_inches='tight')
+    print(f"✅ Saved completion time plot: {output_file}")
+    return output_file
+
+def calculate_r_squared(x_data, y_data, poly_func):
+    """Calculate R-squared for polynomial fit"""
+    y_pred = poly_func(x_data)
+    ss_res = np.sum((y_data - y_pred) ** 2)
+    ss_tot = np.sum((y_data - np.mean(y_data)) ** 2)
+    return 1 - (ss_res / ss_tot) if ss_tot != 0 else 0
+
+def main():
+    parser = argparse.ArgumentParser(description='Plot concurrent download experiment results')
+    parser.add_argument('--input', default='results.csv', help='Input results file')
+    parser.add_argument('--output-dir', default='.', help='Output directory for plots')
+    parser.add_argument('--format', choices=['png', 'pdf', 'svg'], default='png',
+                       help='Output format')
+
+    args = parser.parse_args()
+
+    results = load_results(args.input)
+    if not results:
+        print("No valid results to plot")
+        return
+
+    stats = calculate_statistics(results)
+    if not stats:
+        print("No statistics to calculate")
+        return
+
+    output_dir = Path(args.output_dir)
+    output_dir.mkdir(exist_ok=True)
+
+    plots_created = []
+
+    plot_file = output_dir / f'completion_time_plot.{args.format}'
+    create_completion_time_plot(stats, plot_file)
+    plots_created.append(plot_file)
 
 if __name__ == "__main__":
-    plot_results()
+    main()
