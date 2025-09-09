@@ -1,4 +1,3 @@
-// CORRECTED client.cpp - Implements complete file download through chunked requests
 #include <iostream>
 #include <fstream>
 #include <string>
@@ -16,10 +15,10 @@ class WordClient {
 private:
     std::string server_ip;
     int server_port;
-    int k; // chunk size (words per request)
+    int k; 
     std::string config_file;
     bool quiet_mode;
-    int total_words; // Total words in file (determined dynamically)
+    int total_words; 
 
 public:
     WordClient() : config_file("config.json"), quiet_mode(false),
@@ -89,12 +88,10 @@ public:
         return true;
     }
 
-    // Get total word count from server
     int getTotalWordCount() {
         int client_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (client_fd < 0) return -1;
 
-        // Set TCP_NODELAY
         int nodelay = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
@@ -108,7 +105,6 @@ public:
             return -1;
         }
 
-        // Send special SIZE request
         std::string request = "SIZE\n";
         send(client_fd, request.c_str(), request.length(), 0);
 
@@ -127,12 +123,10 @@ public:
         return -1;
     }
 
-    // Make a single request for chunk starting at offset p
     std::string makeChunkRequest(int p, int chunk_k) {
         int client_fd = socket(AF_INET, SOCK_STREAM, 0);
         if (client_fd < 0) return "";
 
-        // Set TCP_NODELAY for immediate transmission
         int nodelay = 1;
         setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
@@ -146,14 +140,12 @@ public:
             return "";
         }
 
-        // Send request: "p,k\n"
         std::string request = std::to_string(p) + "," + std::to_string(chunk_k) + "\n";
         if (send(client_fd, request.c_str(), request.length(), 0) < 0) {
             close(client_fd);
             return "";
         }
 
-        // Receive response
         char buffer[4096];
         memset(buffer, 0, sizeof(buffer));
         int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
@@ -165,9 +157,7 @@ public:
         return "";
     }
 
-    // Download complete file using chunked requests
     bool downloadCompleteFile() {
-        // First, get total word count
         total_words = getTotalWordCount();
         if (total_words <= 0) {
             if (!quiet_mode) {
@@ -189,7 +179,6 @@ public:
         while (downloaded_words < total_words) {
             request_count++;
 
-            // Calculate chunk size for this request
             int remaining_words = total_words - downloaded_words;
             int chunk_size = std::min(k, remaining_words);
 
@@ -198,7 +187,6 @@ public:
                          << ", requesting " << chunk_size << " words" << std::endl;
             }
 
-            // Make request for this chunk
             std::string response = makeChunkRequest(current_offset, chunk_size);
             if (response.empty()) {
                 if (!quiet_mode) {
@@ -207,7 +195,6 @@ public:
                 return false;
             }
 
-            // Process response - count words received
             response.erase(response.find_last_not_of("\n\r") + 1);
             std::stringstream ss(response);
             std::string word;
@@ -232,7 +219,6 @@ public:
                          << downloaded_words << "/" << total_words << std::endl;
             }
 
-            // Check if we got EOF or fewer words than requested
             if (response.find("EOF") != std::string::npos || words_in_chunk < chunk_size) {
                 break;
             }
@@ -248,18 +234,16 @@ public:
         return downloaded_words > 0;
     }
 
-    // Run complete file download with timing
     double runWithTiming() {
         auto start = std::chrono::high_resolution_clock::now();
         bool success = downloadCompleteFile();
         auto end = std::chrono::high_resolution_clock::now();
 
         auto duration = std::chrono::duration_cast<std::chrono::microseconds>(end - start);
-        double completion_time = duration.count() / 1000.0; // Convert μs to ms
+        double completion_time = duration.count() / 1000.0; 
 
         if (success) {
             if (quiet_mode) {
-                // Output format expected by run_experiments.py
                 std::cout << "ELAPSED_MS:" << std::fixed << std::setprecision(3) 
                          << completion_time << std::endl;
             } else {

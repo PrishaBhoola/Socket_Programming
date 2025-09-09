@@ -1,9 +1,3 @@
-#!/usr/bin/env python3
-"""
-Plot results from run_experiments.py
-Reads results.csv and generates p1_plot.png
-"""
-
 import csv
 import matplotlib.pyplot as plt
 import statistics
@@ -14,10 +8,8 @@ def plot_results():
 
     if not results_file.exists():
         print("Error: results.csv not found")
-        print("Run 'python3 run_experiments.py' first")
         return False
 
-    # Read data
     k_data = {}
     with results_file.open('r') as f:
         reader = csv.DictReader(f)
@@ -29,7 +21,6 @@ def plot_results():
                 k_data[k] = []
             k_data[k].append(elapsed_ms)
 
-    # Calculate statistics
     k_values = []
     avg_times = []
     conf_intervals = []
@@ -39,13 +30,12 @@ def plot_results():
         avg_time = statistics.mean(times)
         std_dev = statistics.stdev(times) if len(times) > 1 else 0
         std_err = std_dev / (len(times) ** 0.5)
-        conf_interval = 1.96 * std_err  # 95% confidence interval
+        conf_interval = 1.96 * std_err  
 
         k_values.append(k)
         avg_times.append(avg_time)
         conf_intervals.append(conf_interval)
 
-    # Create plot
     plt.figure(figsize=(10, 6))
     plt.errorbar(k_values, avg_times, yerr=conf_intervals,
                 marker='o', capsize=5, capthick=2, linewidth=2, markersize=8)
@@ -62,9 +52,7 @@ def plot_results():
 
     plt.tight_layout()
     plt.savefig('p1_plot.png', dpi=300, bbox_inches='tight')
-    print("✅ Plot saved as p1_plot.png")
 
-    # Save processed results
     with open('part1_results.csv', 'w', newline='') as f:
         fieldnames = ['k', 'avg_time', 'std_dev', 'confidence_interval', 'num_samples']
         writer = csv.DictWriter(f, fieldnames=fieldnames)
@@ -80,7 +68,6 @@ def plot_results():
                 'num_samples': len(times)
             })
 
-    print("✅ Processed results saved to part1_results.csv")
     return True
 
 if __name__ == "__main__":

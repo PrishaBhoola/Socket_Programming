@@ -1,4 +1,3 @@
-// CORRECTED server.cpp - Enhanced to support file size queries
 #include <iostream>
 #include <fstream>
 #include <vector>
@@ -108,14 +107,12 @@ public:
         std::string clean_request = request;
         clean_request.erase(clean_request.find_last_not_of("\n\r \t") + 1);
 
-        // Handle SIZE request
         if (clean_request == "SIZE") {
             std::string response = "TOTAL:" + std::to_string(words.size()) + "\n";
             std::cout << "SIZE request: returning " << words.size() << " total words" << std::endl;
             return response;
         }
 
-        // Handle standard p,k request
         std::stringstream ss(clean_request);
         std::string p_str, k_str;
         if (!std::getline(ss, p_str, ',') || !std::getline(ss, k_str)) {
@@ -126,10 +123,6 @@ public:
             int p = std::stoi(p_str);
             int k = std::stoi(k_str);
 
-            std::cout << "Chunk request: offset=" << p << ", count=" << k 
-                     << " (total_words=" << words.size() << ")" << std::endl;
-
-            // Validate offset
             if (p < 0) {
                 return "ERROR:Invalid offset\n";
             }
@@ -141,14 +134,12 @@ public:
             std::string response;
             int words_sent = 0;
 
-            // Send words starting from position p
             for (int i = p; i < (int)words.size() && words_sent < k; i++) {
                 if (words_sent > 0) response += ",";
                 response += words[i];
                 words_sent++;
             }
 
-            // Add EOF if we've reached the end of the file
             if (p + words_sent >= (int)words.size()) {
                 if (words_sent > 0) response += ",";
                 response += "EOF";
@@ -156,7 +147,6 @@ public:
 
             response += "\n";
 
-            std::cout << "Sent " << words_sent << " words (bytes: " << response.length() << ")" << std::endl;
             return response;
 
         } catch (...) {
@@ -195,9 +185,6 @@ public:
             return;
         }
 
-        std::cout << "Server listening on port " << server_port << std::endl;
-        std::cout << "Ready to serve " << words.size() << " words" << std::endl;
-
         while (true) {
             struct sockaddr_in client_addr{};
             socklen_t client_len = sizeof(client_addr);
@@ -207,8 +194,6 @@ public:
                 std::cerr << "Error: Accept failed" << std::endl;
                 continue;
             }
-
-            // Set TCP_NODELAY for immediate response
             int nodelay = 1;
             setsockopt(client_fd, IPPROTO_TCP, TCP_NODELAY, &nodelay, sizeof(nodelay));
 
@@ -242,8 +227,6 @@ int main(int argc, char* argv[]) {
         std::cerr << "Error parsing arguments" << std::endl;
         return 1;
     }
-
-    std::cout << "Starting enhanced word server..." << std::endl;
     if (!server.loadConfig()) return 1;
     if (!server.loadWords()) return 1;
 
