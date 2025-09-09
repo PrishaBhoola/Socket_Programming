@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """
-Mininet topology for Greedy Client FCFS Analysis (Part 3)
-Creates network with server and multiple clients for fairness testing
+Mininet Topology for Greedy Client FCFS Analysis (Part 3)
+- Creates a simple network with one server, one switch, and N clients.
+- This setup is used by the experiment runner to simulate the network environment.
 """
 
 from mininet.topo import Topo
@@ -10,78 +11,64 @@ from mininet.node import OVSSwitch
 from mininet.cli import CLI
 from mininet.log import setLogLevel
 from mininet.link import TCLink
-
-# Default configuration
-DEFAULT_CLIENTS = 10
-BANDWIDTH = 1  # Mbps
-DELAY = '0ms'
+import json
 
 class GreedyClientTopo(Topo):
-    """Topology for greedy client fairness analysis"""
+    """
+    Topology: 1 Server, 1 Switch, N Clients.
+    Server IP: 10.0.0.100
+    Client IPs: 10.0.0.1, 10.0.0.2, ..., 10.0.0.N
+    """
+    def __init__(self, num_clients=10, bw=10, delay='1ms'):
+        super().__init__()
 
-    def __init__(self, num_clients=DEFAULT_CLIENTS):
-        Topo.__init__(self)
-
-        # Create switch
+        # Add a central switch
         switch = self.addSwitch('s1', cls=OVSSwitch)
 
-        # Create server at fixed IP
-        server = self.addHost('server', ip='10.0.0.100/24')
+        # Add the server with a fixed IP address
+        server = self.addHost('server', ip='10.0.0.100/24', cpu=0.1)
+        self.addLink(server, switch, bw=bw, delay=delay)
 
-        # Create clients with sequential IPs
-        for i in range(num_clients):
-            client = self.addHost(f'client{i+1}', ip=f'10.0.0.{i+1}/24')
+        # Add clients with sequential IP addresses
+        for i in range(1, num_clients + 1):
+            client = self.addHost(f'client{i}', ip=f'10.0.0.{i}/24', cpu=0.1)
+            self.addLink(client, switch, bw=bw, delay=delay)
 
-        # Connect server to switch
-        self.addLink(server, switch, bw=BANDWIDTH, delay=DELAY)
-
-        # Connect all clients to switch
-        for i in range(num_clients):
-            client_name = f'client{i+1}'
-            self.addLink(client_name, switch, bw=BANDWIDTH, delay=DELAY)
-
-def create_network(num_clients=DEFAULT_CLIENTS):
-    """Create and start the network"""
-    print(f"Creating greedy client analysis network")
-    print(f"Server: 10.0.0.100")
-    print(f"Clients: 10.0.0.1 to 10.0.0.{num_clients}")
-    print(f"Link bandwidth: {BANDWIDTH} Mbps")
-
-    topo = GreedyClientTopo(num_clients)
-    net = Mininet(topo=topo, switch=OVSSwitch, link=TCLink)
-    net.start()
-
-    return net
-
-if __name__ == '__main__':
+def create_and_run_cli():
+    """
+    This function is executed when the script is run directly.
+    It creates the network and starts the Mininet CLI for interactive testing.
+    """
     setLogLevel('info')
-
-    # Get number of clients from config or use default
-    num_clients = DEFAULT_CLIENTS
+    
+    num_clients = 10
     try:
-        import json
         with open('config.json') as f:
             config = json.load(f)
-            num_clients = config.get('num_clients', DEFAULT_CLIENTS)
-    except:
-        pass
+            num_clients = config.get('num_clients', 10)
+    except FileNotFoundError:
+        print("config.json not found, using default of 10 clients.")
+    except Exception as e:
+        print(f"Error reading config.json: {e}, using default of 10 clients.")
+        
+    print(f"Creating a network with 1 server and {num_clients} clients.")
+    
+    topo = GreedyClientTopo(num_clients)
+    net = Mininet(topo=topo, switch=OVSSwitch, link=TCLink, controller=None)
+    net.start()
 
-    print(f"Creating network for greedy client analysis with {num_clients} clients")
-
-    # Create network
-    net = create_network(num_clients)
-
-    print("Network created successfully!")
-    print("Hosts:")
-    for h in net.hosts:
-        print(f"  {h.name}: {h.IP()}")
-
-    print("\nStarting Mininet CLI...")
-    print("You can now run:")
+    print("\n--- Network is running. You can now use the Mininet CLI. ---")
+    print("Example commands to run in the CLI:")
     print("  server python3 server.py &")
-    print("  client1 python3 client.py --client-id client1 --greedy --c 10")
+    print("  client1 python3 client.py --client-id client1 --greedy --c 5")
     print("  client2 python3 client.py --client-id client2")
     print("  exit")
+    print("------------------------------------------------------------\n")
 
     CLI(net)
+    
+    print("--- Stopping network ---")
     net.stop()
+
+if __name__ == '__main__':
+    create_and_run_cli()

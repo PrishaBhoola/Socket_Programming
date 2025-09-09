@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
-Client for Greedy FCFS Fairness Analysis (Part 3)
-Can behave as normal client (1 request) or greedy client (c requests)
+FCFS Asynchronous Client for Greedy Client Fairness Analysis (Part 3)
+- FINAL CORRECTED VERSION
+- This version uses a single, persistent TCP connection and robust buffering.
+- A greedy client sends a true "burst" of 'c' requests back-to-back before
+  waiting to receive the corresponding 'c' responses. This correctly
+  simulates pipelining and monopolizing the server's FCFS queue.
 """
 
 import socket
@@ -11,214 +15,172 @@ import time
 import argparse
 from typing import Optional
 
-class GreedyFCFSClient:
+class FCFSClient:
     def __init__(self, config_file='config.json'):
         self.config = self.load_config(config_file)
-
-        # Configuration
         self.server_ip = self.config.get('server_ip', '10.0.0.100')
         self.server_port = self.config.get('port', 8887)
         self.k = self.config.get('k', 5)
-        self.p = self.config.get('p', 0)
-
-        # Client behavior settings
         self.is_greedy = False
-        self.c = self.config.get('c', 1)  # Number of requests for greedy client
-        self.client_id = ""
+        self.c = self.config.get('c', 1)
+        self.client_id = "client"
         self.quiet = False
+        self.total_words = 0
+        self.words_downloaded = 0
+        self.sock: Optional[socket.socket] = None
+        # Buffer for handling partial network receives
+        self.pending_data = b""
 
     def load_config(self, config_file: str) -> dict:
-        """Load configuration from JSON file"""
         try:
             with open(config_file, 'r') as f:
                 return json.load(f)
         except Exception as e:
+            if not self.quiet:
+                print(f"[{self.client_id}] CONFIG ERROR: {e}", file=sys.stderr)
             return {}
 
-    def set_greedy(self, is_greedy: bool, c: Optional[int] = None):
-        """Set client to be greedy or normal"""
+    def setup_behavior(self, client_id: str, is_greedy: bool, c: int, quiet: bool):
+        self.client_id = client_id
         self.is_greedy = is_greedy
-        if c is not None:
+        self.quiet = quiet
+        if is_greedy and c:
             self.c = c
 
-    def set_client_id(self, client_id: str):
-        """Set client identifier"""
-        self.client_id = client_id
-
-    def set_quiet(self, quiet: bool):
-        """Set quiet mode"""
-        self.quiet = quiet
-
-    def connect_to_server(self) -> Optional[socket.socket]:
-        """Connect to server"""
+    def connect(self):
         try:
-            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            sock.settimeout(30.0)
-            sock.connect((self.server_ip, self.server_port))
-
-            if not self.quiet:
-                behavior = "GREEDY" if self.is_greedy else "NORMAL"
-                print(f"[{self.client_id}] Connected to {self.server_ip}:{self.server_port} ({behavior})")
-
-            return sock
+            self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.sock.settimeout(60.0)
+            self.sock.connect((self.server_ip, self.server_port))
         except Exception as e:
             if not self.quiet:
-                print(f"[{self.client_id}] Connection error: {e}")
+                print(f"[{self.client_id}] ERROR: Connection failed: {e}", file=sys.stderr)
+            self.sock = None
+
+    def disconnect(self):
+        if self.sock:
+            self.sock.close()
+            self.sock = None
+
+    def _receive_one_response(self) -> Optional[str]:
+        """
+        Waits for one complete, newline-terminated response, using an
+        internal buffer to handle multiple responses arriving in one packet.
+        """
+        if not self.sock:
             return None
-
-    def send_request(self, sock: socket.socket, p: int, k: int) -> bool:
-        """Send a single request to server"""
-        try:
-            request = f"{p},{k}\n"
-            sock.send(request.encode())
-
-            if not self.quiet:
-                print(f"[{self.client_id}] Sent request: p={p}, k={k}")
-
-            return True
-        except Exception as e:
-            if not self.quiet:
-                print(f"[{self.client_id}] Error sending request: {e}")
-            return False
-
-    def receive_response(self, sock: socket.socket) -> Optional[str]:
-        """Receive response from server"""
-        try:
-            response = b""
-            while True:
-                chunk = sock.recv(4096)
+        
+        # Loop until a newline is found in the buffer
+        while b'\n' not in self.pending_data:
+            try:
+                chunk = self.sock.recv(4096)
                 if not chunk:
-                    break
-                response += chunk
-                if b'\n' in response:
+                    # Connection closed by server
+                    return None
+                self.pending_data += chunk
+            except socket.timeout:
+                if not self.quiet:
+                    print(f"[{self.client_id}] NETWORK TIMEOUT waiting for response.", file=sys.stderr)
+                return None
+            except Exception as e:
+                if not self.quiet:
+                    print(f"[{self.client_id}] ERROR during receive: {e}", file=sys.stderr)
+                return None
+        
+        # Extract the first complete response from the buffer
+        response, self.pending_data = self.pending_data.split(b'\n', 1)
+        return response.decode().strip()
+
+
+    def get_total_word_count(self) -> bool:
+        try:
+            self.sock.sendall(b"SIZE\n")
+            response = self._receive_one_response()
+            if response and response.startswith("TOTAL:"):
+                self.total_words = int(response.split(':')[1])
+                return True
+        except Exception as e:
+             if not self.quiet:
+                print(f"[{self.client_id}] Failed to get word count: {e}", file=sys.stderr)
+        return False
+
+    def run_download(self) -> float:
+        self.connect()
+        if not self.sock or not self.get_total_word_count() or self.total_words == 0:
+            self.disconnect()
+            return -1.0
+
+        start_time = time.time()
+        
+        try:
+            while self.words_downloaded < self.total_words:
+                requests_to_send = self.c if self.is_greedy else 1
+                
+                # --- 1. SEND A BURST OF REQUESTS ---
+                sent_count = 0
+                for i in range(requests_to_send):
+                    current_pos = self.words_downloaded + (i * self.k)
+                    if current_pos >= self.total_words:
+                        break 
+                    request = f"{current_pos},{self.k}\n"
+                    self.sock.sendall(request.encode())
+                    sent_count += 1
+                
+                if sent_count == 0:
                     break
 
-            return response.decode().strip()
+                # --- 2. RECEIVE THE BURST OF RESPONSES ---
+                words_this_burst = 0
+                for _ in range(sent_count):
+                    response = self._receive_one_response()
+                    if response is None:
+                        raise ConnectionAbortedError("Server connection lost while receiving burst.")
+                    
+                    if "EOF" in response:
+                        clean_response = response.replace(",EOF", "").replace("EOF", "")
+                    else:
+                        clean_response = response
+
+                    words = clean_response.split(',') if clean_response else []
+                    words_this_burst += len(words)
+
+                    if "EOF" in response:
+                        self.words_downloaded = self.total_words 
+                        break
+
+                if self.words_downloaded < self.total_words:
+                     self.words_downloaded += words_this_burst
+
         except Exception as e:
             if not self.quiet:
-                print(f"[{self.client_id}] Error receiving response: {e}")
-            return None
-
-    def run_normal_client(self) -> float:
-        """Run as normal client - send 1 request and wait for response"""
-        if not self.quiet:
-            print(f"[{self.client_id}] Running as NORMAL client (1 request)")
-
-        sock = self.connect_to_server()
-        if not sock:
+                print(f"[{self.client_id}] FATAL ERROR during download: {e}", file=sys.stderr)
             return -1.0
-
-        try:
-            start_time = time.time()
-
-            # Send single request
-            if not self.send_request(sock, self.p, self.k):
-                return -1.0
-
-            # Wait for response
-            response = self.receive_response(sock)
-            if not response:
-                return -1.0
-
-            end_time = time.time()
-            completion_time = (end_time - start_time) * 1000
-
-            if not self.quiet:
-                print(f"[{self.client_id}] Received response, completed in {completion_time:.3f} ms")
-
-            return completion_time
-
         finally:
-            sock.close()
+            self.disconnect()
 
-    def run_greedy_client(self) -> float:
-        """Run as greedy client - send c requests back-to-back, then wait for all responses"""
-        if not self.quiet:
-            print(f"[{self.client_id}] Running as GREEDY client ({self.c} requests)")
-
-        sock = self.connect_to_server()
-        if not sock:
-            return -1.0
-
-        try:
-            start_time = time.time()
-
-            # Send c requests back-to-back (greedy behavior)
-            current_p = self.p
-            for i in range(self.c):
-                if not self.send_request(sock, current_p, self.k):
-                    return -1.0
-                current_p += self.k  # Move to next chunk
-
-            if not self.quiet:
-                print(f"[{self.client_id}] Sent all {self.c} requests, waiting for responses...")
-
-            # Receive all c responses
-            responses_received = 0
-            while responses_received < self.c:
-                response = self.receive_response(sock)
-                if not response:
-                    break
-                responses_received += 1
-
-                if not self.quiet:
-                    print(f"[{self.client_id}] Received response {responses_received}/{self.c}")
-
-            end_time = time.time()
-            completion_time = (end_time - start_time) * 1000
-
-            if responses_received == self.c:
-                if not self.quiet:
-                    print(f"[{self.client_id}] All responses received, completed in {completion_time:.3f} ms")
-                return completion_time
-            else:
-                if not self.quiet:
-                    print(f"[{self.client_id}] Only received {responses_received}/{self.c} responses")
-                return -1.0
-
-        finally:
-            sock.close()
-
-    def run(self) -> float:
-        """Run client based on greedy/normal mode"""
-        if self.is_greedy:
-            return self.run_greedy_client()
-        else:
-            return self.run_normal_client()
+        return (time.time() - start_time) * 1000
 
 def main():
-    parser = argparse.ArgumentParser(description='Greedy FCFS client')
-    parser.add_argument('--config', default='config.json', help='Config file')
-    parser.add_argument('--client-id', default='client', help='Client identifier')
-    parser.add_argument('--greedy', action='store_true', help='Run as greedy client')
-    parser.add_argument('--c', type=int, help='Number of requests for greedy client')
-    parser.add_argument('--quiet', action='store_true', help='Quiet mode')
-
+    parser = argparse.ArgumentParser(description="Greedy Client for FCFS Fairness Analysis")
+    parser.add_argument('--client-id', required=True, help="Unique identifier for this client")
+    parser.add_argument('--greedy', action='store_true', help="Enable greedy client behavior")
+    parser.add_argument('--c', type=int, help="Number of requests for a greedy client's turn")
+    parser.add_argument('--quiet', action='store_true', help="Suppress verbose output for scripting")
     args = parser.parse_args()
 
-    client = GreedyFCFSClient(args.config)
-    client.set_client_id(args.client_id)
-    client.set_quiet(args.quiet)
-
-    if args.greedy:
-        c_value = args.c if args.c else client.c
-        client.set_greedy(True, c_value)
-
-    start_time = time.time()
-    completion_time = client.run()
+    client = FCFSClient()
+    client.setup_behavior(args.client_id, args.greedy, args.c, args.quiet)
+    
+    completion_time = client.run_download()
 
     if completion_time > 0:
         if args.quiet:
-            behavior = "GREEDY" if client.is_greedy else "NORMAL"
-            requests = client.c if client.is_greedy else 1
-            print(f"ELAPSED_MS:{completion_time:.3f}:TYPE:{behavior}:REQUESTS:{requests}")
-        else:
-            print(f"[{args.client_id}] Success! Completion time: {completion_time:.3f} ms")
+            client_type = "GREEDY" if args.greedy else "NORMAL"
+            print(f"ELAPSED_MS:{completion_time:.3f}:TYPE:{client_type}")
         sys.exit(0)
     else:
-        if not args.quiet:
-            print(f"[{args.client_id}] Failed!")
         sys.exit(1)
 
 if __name__ == "__main__":
     main()
+
