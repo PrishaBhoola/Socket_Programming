@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Full Experimental Suite for Greedy Client FCFS Analysis (Part 3)
-- Runs the FCFS experiment for a range of 'c' values.
-- Repeats each experiment multiple times to ensure reliable results.
-- Saves all results to a CSV file for plotting and analysis.
+Full experimental suite for Greedy Client FCFS Analysis (Part 3)
+- FINAL STABLE VERSION
+- This version runs experiments for c values from 1 to 10 to
+  generate a complete and accurate graph as per the assignment.
 """
 
 import subprocess
@@ -15,131 +15,151 @@ from pathlib import Path
 import argparse
 import os
 
-def load_config(config_file='config.json'):
-    """Loads the base configuration for the experiments."""
-    try:
-        with Path(config_file).open() as f:
-            return json.load(f)
-    except Exception as e:
-        print(f"ERROR: Could not load configuration. {e}")
-        return {}
+class GreedyExperimentRunner:
+    def __init__(self, config_file='config.json'):
+        self.config_file = config_file
+        self.config = self.load_config()
+        self.results_file = Path('fairness_results.csv')
 
-def run_single_iteration(num_clients, c_value, repetition):
-    """
-    Executes one iteration of the experiment by calling the runner.py script.
-    """
-    print(f"  Running c={c_value}, Repetition #{repetition}...")
-    cmd = [
-        'sudo', sys.executable, 'runner.py',
-        '--clients', str(num_clients),
-        '--c', str(c_value),
-        '--quiet'
-    ]
-    
-    try:
-        # We need a long timeout as Mininet setup and the experiment can be slow.
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=360)
+    def load_config(self):
+        """Load experiment configuration"""
+        try:
+            with Path(self.config_file).open() as f:
+                return json.load(f)
+        except Exception as e:
+            print(f"Error loading config: {e}")
+            return {}
 
-        if result.returncode == 0 and result.stdout.strip().startswith("SUCCESS"):
-            # Parse the machine-readable output from runner.py
-            # Format: SUCCESS:total_clients:greedy_time:normal_avg:advantage_ratio:jains_index
-            parts = result.stdout.strip().split(':')
-            return {
-                'num_clients': int(parts[1]),
-                'c_value': c_value,
-                'repetition': repetition,
-                'greedy_completion_time': float(parts[2]),
-                'normal_avg_completion_time': float(parts[3]),
-                'advantage_ratio': float(parts[4]),
-                'jains_fairness_index': float(parts[5]),
-                'status': 'success'
-            }
-        else:
-            print(f"    -> FAILED. Return code: {result.returncode}")
-            print(f"    -> STDOUT: {result.stdout.strip()}")
-            print(f"    -> STDERR: {result.stderr.strip()}")
-            return {'c_value': c_value, 'status': 'failed'}
+    def get_c_values(self):
+        """Get list of c values to test (1 to 10 as per assignment)"""
+        return list(range(1, 11))
 
-    except subprocess.TimeoutExpired:
-        print("    -> FAILED: Timeout expired. The experiment took too long.")
-        return {'c_value': c_value, 'status': 'timeout'}
-    except Exception as e:
-        print(f"    -> FAILED: An unexpected error occurred: {e}")
-        return {'c_value': c_value, 'status': 'error'}
+    def run_single_experiment(self, num_clients, c_value, repetition):
+        """Run single experiment with specified c value"""
+        print(f"  Running c={c_value}, Repetition #{repetition}...")
 
-def save_results(results, filename='fairness_results.csv'):
-    """Saves the collected results into a CSV file."""
-    if not results:
-        return
-        
-    # Check if the file exists to decide whether to write headers
-    file_exists = Path(filename).is_file()
-    
-    with open(filename, 'a', newline='') as f:
-        writer = csv.DictWriter(f, fieldnames=results[0].keys())
-        if not file_exists:
-            writer.writeheader()
-        for result in results:
-            if result['status'] == 'success':
-                writer.writerow(result)
-    print(f"\nResults appended to '{filename}'")
+        try:
+            # Use sudo if not already running as root
+            sudo_prefix = [] if os.geteuid() == 0 else ['sudo']
+            cmd = sudo_prefix + [
+                sys.executable, 'runner.py',
+                '--clients', str(num_clients),
+                '--c', str(c_value),
+                '--quiet'
+            ]
 
-def run_experimental_suite():
-    """
-    Main function to run the entire suite of experiments.
-    """
-    config = load_config()
-    num_clients = config.get('num_clients', 10)
-    
-    # Define the range of 'c' values and number of repetitions
-    c_values_to_test = [1, 4, 8, 12, 16, 20, 24, 28, 32]
-    repetitions_per_c = 1
+            # Set a generous timeout for the entire run
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
 
-    print("=== STARTING FCFS FAIRNESS EXPERIMENTAL SUITE ===")
-    print(f"Number of clients: {num_clients}")
-    print(f"Values for 'c': {c_values_to_test}")
-    print(f"Repetitions per 'c': {repetitions_per_c}")
-    print("===============================================")
-    
-    # Clean up old results file
-    results_file = 'fairness_results.csv'
-    if Path(results_file).exists():
-        os.remove(results_file)
-        print(f"Removed old results file: '{results_file}'")
+            if result.returncode == 0:
+                output = result.stdout.strip()
+                success_line = next((line for line in output.splitlines() if line.startswith("SUCCESS:")), None)
+                
+                if success_line:
+                    parts = success_line.split(':')
+                    # SUCCESS:total_clients:greedy_time:normal_avg:fairness_ratio:jains_index
+                    if len(parts) == 6:
+                        greedy_time = float(parts[2])
+                        normal_avg_time = float(parts[3])
+                        fairness_ratio = float(parts[4])
+                        jains_index = float(parts[5])
 
-    all_results = []
-    total_runs = len(c_values_to_test) * repetitions_per_c
-    completed_runs = 0
+                        print(f"    ✅ Success: ratio={fairness_ratio:.2f}x, JFI={jains_index:.3f}")
 
-    for c in c_values_to_test:
-        print(f"\n--- Testing with c = {c} ---")
-        for rep in range(1, repetitions_per_c + 1):
-            completed_runs += 1
-            print(f"Progress: ({completed_runs}/{total_runs})")
+                        return {
+                            'num_clients': num_clients,
+                            'c_value': c_value,
+                            'repetition': repetition,
+                            'greedy_completion_time': greedy_time,
+                            'normal_avg_completion_time': normal_avg_time,
+                            'fairness_ratio': fairness_ratio,
+                            'jains_index': jains_index,
+                        }
+                print(f"    ❌ FAILED (Could not parse SUCCESS line from output):\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}")
+                return None
+            else:
+                print(f"    ❌ FAILED (runner.py exited with code {result.returncode}):\n--- STDOUT ---\n{result.stdout}\n--- STDERR ---\n{result.stderr}")
+                return None
+
+        except subprocess.TimeoutExpired:
+            print("    ❌ FAILED (Timed out after 300s)")
+            return None
+        except Exception as e:
+            print(f"    ❌ FAILED (Error: {e})")
+            return None
+
+    def save_result(self, result):
+        """Save experiment result to CSV."""
+        if not result:
+            return
+
+        # Create CSV with headers if it doesn't exist
+        if not self.results_file.exists():
+            with self.results_file.open('w', newline='') as f:
+                writer = csv.writer(f)
+                writer.writerow([
+                    'num_clients', 'c_value', 'repetition',
+                    'greedy_completion_time', 'normal_avg_completion_time',
+                    'fairness_ratio', 'jains_index'
+                ])
+
+        with self.results_file.open('a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                result['num_clients'],
+                result['c_value'],
+                result['repetition'],
+                result['greedy_completion_time'],
+                result['normal_avg_completion_time'],
+                result['fairness_ratio'],
+                result['jains_index']
+            ])
+
+    def run_full_suite(self):
+        """Run complete experimental suite"""
+        c_values = self.get_c_values()
+        num_clients = self.config.get('num_clients', 10)
+        num_repetitions = 1 # Run 3 times for better averaging
+
+        # Clear previous results
+        if self.results_file.exists():
+            self.results_file.unlink()
+
+        print("=== STARTING FCFS FAIRNESS EXPERIMENTAL SUITE ===")
+        print(f"Number of clients: {num_clients}")
+        print(f"Values for 'c': {c_values}")
+        print(f"Repetitions per 'c': {num_repetitions}")
+        print("===============================================\n")
+
+        total_experiments = len(c_values) * num_repetitions
+        successful = 0
+
+        for i, c_value in enumerate(c_values):
+            print(f"--- Testing with c = {c_value} ---")
+            print(f"Progress: ({i+1}/{len(c_values)})")
             
-            result = run_single_iteration(num_clients, c, rep)
-            all_results.append(result)
-            
-            # Save results incrementally
-            if result['status'] == 'success':
-                 save_results([result], results_file)
+            for rep in range(1, num_repetitions + 1):
+                result = self.run_single_experiment(num_clients, c_value, rep)
+                if result:
+                    self.save_result(result)
+                    successful += 1
+                time.sleep(1) # Brief pause between runs
+            print("-" * 20)
 
-    successful_runs = sum(1 for r in all_results if r['status'] == 'success')
-    
-    print("\n=== EXPERIMENTAL SUITE COMPLETE ===")
-    print(f"Total runs: {total_runs}")
-    print(f"Successful runs: {successful_runs}")
-    print(f"Failed/Timeout runs: {total_runs - successful_runs}")
-    print(f"Final results are in '{results_file}'")
-    print("\nTo visualize the results, run: python3 plot.py")
-
+        print("\n=== EXPERIMENTAL SUITE COMPLETE ===")
+        print(f"Successful runs: {successful}/{total_experiments}")
+        print(f"Final results are in '{self.results_file}'")
+        print("\nTo visualize the results, run: python3 plot.py")
+        return successful > 0
 
 def main():
-    if os.geteuid() != 0:
-        print("This script calls a Mininet script and must be run with sudo.")
-        print("--> sudo python3 run_experiments.py")
-        sys.exit(1)
-    run_experimental_suite()
+    parser = argparse.ArgumentParser(description='Greedy client fairness experiments')
+    args = parser.parse_args()
+
+    runner = GreedyExperimentRunner()
+    success = runner.run_full_suite()
+    sys.exit(0 if success else 1)
 
 if __name__ == "__main__":
     main()
+

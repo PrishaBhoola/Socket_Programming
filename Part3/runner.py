@@ -1,14 +1,12 @@
 #!/usr/bin/env python3
 """
 FCFS Turn-Based Experiment Runner (Part 3)
-- FINAL CORRECTED VERSION
-- This runner correctly launches the greedy client with the required '--c'
-  argument and robustly waits for all clients to finish before analysis.
-- Suppresses summary output in --quiet mode to ensure clean parsing by other scripts.
-- ADDED MASTER TIMEOUT to prevent hung processes from stalling the entire suite.
+- FINAL STABLE VERSION
+- This version uses a lightweight, stable polling mechanism to monitor clients,
+  fixing both the 'Killed' (OOM) errors and allowing the experiment to run
+  to completion for all 'c' values to generate an accurate graph.
 """
 
-import subprocess
 import sys
 import time
 import json
@@ -17,7 +15,7 @@ from pathlib import Path
 import argparse
 import numpy as np
 
-# (Assuming topology.py with GreedyClientTopo is in the same directory)
+# Import Mininet libraries
 from mininet.net import Mininet
 from mininet.node import OVSSwitch
 from mininet.link import TCLink
@@ -25,8 +23,7 @@ from mininet.log import setLogLevel
 from topology import GreedyClientTopo
 
 # --- Constants ---
-# Master timeout for waiting for all clients to complete.
-CLIENT_COMPLETION_TIMEOUT = 120  # seconds
+CLIENT_COMPLETION_TIMEOUT = 240  # Increased timeout for high 'c' values
 
 def load_config(config_file='config.json'):
     try:
@@ -36,28 +33,8 @@ def load_config(config_file='config.json'):
         print(f"ERROR: Could not load config file: {e}", file=sys.stderr)
         return {}
 
-def create_default_config():
-    config = {
-        "server_ip": "10.0.0.100",
-        "port": 8887,
-        "num_clients": 10,
-        "c": 10,
-        "k": 5
-    }
-    with open('config.json', 'w') as f:
-        json.dump(config, f, indent=4)
-    print("--- Created default config.json ---")
-
-def create_words_file(num_words=100):
-    if not Path('words.txt').exists():
-        words = [f"word_{i:03d}" for i in range(num_words)]
-        content = ','.join(words)
-        with open('words.txt', 'w') as f:
-            f.write(content)
-        print(f"--- Created words.txt with {num_words} words ---")
-
 def analyze_results(results: list):
-    """Calculates fairness metrics but does not print them."""
+    """Calculates fairness metrics from a list of client results."""
     if not results:
         return None
 
@@ -65,13 +42,12 @@ def analyze_results(results: list):
     normal_times = [r['time'] for r in results if r['type'] == 'NORMAL']
 
     if not greedy_times or not normal_times:
-        # This can happen if the greedy client timed out and produced no result
         return None
 
     greedy_avg_time = np.mean(greedy_times)
     normal_avg_time = np.mean(normal_times)
     
-    all_times = [r['time'] for r in results]
+    all_times = [1/r['time'] for r in results]
     sum_of_times = sum(all_times)
     sum_of_squares = sum(x**2 for x in all_times)
     n = len(all_times)
@@ -98,65 +74,70 @@ def run_mininet_experiment(num_clients: int, c_value: int, greedy_client_id: str
         net = Mininet(topo=topo, switch=OVSSwitch, link=TCLink, cleanup=True)
         net.start()
         
-        if verbose:
-            print(f"*** Mininet started with {num_clients} clients. Pinging...")
-            loss = net.pingAll()
-            if loss > 0:
-                 print(f"*** WARNING: {loss}% packet loss in network. Results may be unstable.", file=sys.stderr)
-
         server = net.get('server')
         server.cmd('python3 server.py > server.log 2>&1 &')
         if verbose:
             print("Server process started. Waiting for it to initialize...")
         time.sleep(2) 
 
-        client_procs = {}
         if verbose:
-            print(f"Started {num_clients} clients ({greedy_client_id} is greedy with c={c_value}). Waiting for completion...")
-
+            print(f"Starting {num_clients} clients ({greedy_client_id} is greedy with c={c_value})...")
+        
         for i in range(1, num_clients + 1):
             client_name = f'client{i}'
             client = net.get(client_name)
-            log_file = f"{client_name}.log"
+            log_file_path = f"/tmp/{client_name}.log" # Use /tmp for logs
             
             cmd_args = ['python3', 'client.py', '--client-id', client_name, '--quiet']
             if client_name == greedy_client_id:
                 cmd_args.extend(['--greedy', '--c', str(c_value)])
             
-            cmd = ' '.join(cmd_args) + f' > {log_file} 2>&1'
-            client_procs[client_name] = client.popen(cmd, shell=True)
+            cmd = ' '.join(cmd_args) + f' > {log_file_path} 2>&1 &'
+            client.cmd(cmd)
 
-        # --- MODIFIED: Wait for processes with a master timeout ---
-        start_time = time.time()
-        for client_name, proc in client_procs.items():
-            remaining_time = CLIENT_COMPLETION_TIMEOUT - (time.time() - start_time)
-            if remaining_time <= 0:
-                print(f"*** MASTER TIMEOUT exceeded waiting for {client_name}.", file=sys.stderr)
-                break
-            try:
-                proc.wait(timeout=remaining_time)
-            except subprocess.TimeoutExpired:
-                print(f"*** TIMEOUT: Client {client_name} did not complete in time.", file=sys.stderr)
-        
         if verbose:
-            print("All client processes have completed or timed out.")
-            print("Collecting results...")
+            print("Waiting for all clients to complete...")
+        
+        start_time = time.time()
+        all_done = False
+        while time.time() - start_time < CLIENT_COMPLETION_TIMEOUT:
+            still_running = 0
+            for i in range(1, num_clients + 1):
+                client = net.get(f'client{i}')
+                # Use pgrep for a lightweight process check
+                pattern = f"client.py --client-id client{i}"
+                result = client.cmd(f'pgrep -f "{pattern}"')
+                if result.strip():
+                    still_running += 1
+            
+            if still_running == 0:
+                all_done = True
+                if verbose:
+                    print("✅ All clients have completed.")
+                break
+            
+            time.sleep(2)
 
+        if not all_done:
+            print(f"*** TIMEOUT: Not all clients finished within {CLIENT_COMPLETION_TIMEOUT}s.", file=sys.stderr)
+
+        if verbose:
+            print("Collecting results...")
+        
         results = []
         for i in range(1, num_clients + 1):
             client_name = f'client{i}'
-            log_file = f"{client_name}.log"
+            log_file_path = f"/tmp/{client_name}.log"
+            client_host = net.get(client_name)
+            output = client_host.cmd(f'cat {log_file_path}').strip()
+            
             try:
-                with open(log_file, 'r') as f:
-                    output = f.read().strip()
-                    parts = output.split(':')
-                    if len(parts) == 4 and parts[0] == "ELAPSED_MS":
-                        results.append({'client': client_name, 'time': float(parts[1]), 'type': parts[3]})
-            except (FileNotFoundError, IndexError, ValueError):
-                pass # Ignore failed or timed-out clients
-            finally:
-                if os.path.exists(log_file):
-                    os.remove(log_file)
+                parts = output.split(':')
+                if len(parts) == 4 and parts[0] == "ELAPSED_MS":
+                    results.append({'client': client_name, 'time': float(parts[1]), 'type': parts[3]})
+            except (ValueError, IndexError):
+                if verbose:
+                    print(f"  - Could not parse result for {client_name}", file=sys.stderr)
         
         return results
 
@@ -164,38 +145,29 @@ def run_mininet_experiment(num_clients: int, c_value: int, greedy_client_id: str
         print(f"FATAL ERROR during experiment: {e}", file=sys.stderr)
         return []
     finally:
-        # Forcefully terminate any lingering processes to ensure a clean slate
         if net:
             for host in net.hosts:
-                host.cmd('pkill -9 python3')
+                host.cmd('pkill -9 -f "client.py"')
+                host.cmd('pkill -9 -f "server.py"')
             if verbose:
                 print("--- Stopping Mininet ---")
             net.stop()
 
 def main():
     parser = argparse.ArgumentParser(description="Greedy Client FCFS Fairness Experiment Runner")
-    parser.add_argument('--setup', action='store_true', help="Create default config and words.txt files")
     parser.add_argument('--clients', type=int, help="Number of clients to run in the experiment")
     parser.add_argument('--c', type=int, help="Number of requests per turn for the greedy client")
     parser.add_argument('--greedy-id', type=str, default='client1', help="Which client should be greedy")
     parser.add_argument('--quiet', action='store_true', help="Run Mininet with less verbose output")
     args = parser.parse_args()
 
-    if args.setup:
-        create_default_config()
-        create_words_file()
-        return
-
     config = load_config()
     num_clients = args.clients or config.get('num_clients', 10)
     c_value = args.c or config.get('c', 10)
 
-    if not Path('config.json').exists(): create_default_config()
-    if not Path('words.txt').exists(): create_words_file()
-
     results = run_mininet_experiment(num_clients, c_value, args.greedy_id, not args.quiet)
 
-    if results:
+    if results and len(results) == num_clients:
         analysis = analyze_results(results)
         if analysis:
             if not args.quiet:
@@ -205,12 +177,12 @@ def main():
                 print(f"Greedy Advantage: {analysis['fairness_ratio']:.2f}x faster")
                 print(f"Jain's Fairness Index: {analysis['jains_index']:.4f} (1.0 is perfect fairness)")
 
-            # Always print the machine-readable line for the calling script
             print(f"SUCCESS:{analysis['total_clients']}:{analysis['greedy_completion_time']:.3f}:{analysis['normal_avg_time']:.3f}:{analysis['fairness_ratio']:.3f}:{analysis['jains_index']:.4f}")
             sys.exit(0)
 
     if not args.quiet:
-        print("\n=== Experiment FAILED: Not enough data for analysis ===", file=sys.stderr)
+        failed_count = num_clients - len(results)
+        print(f"\n=== Experiment FAILED: {failed_count} client(s) did not report results ===", file=sys.stderr)
     sys.exit(1)
 
 if __name__ == "__main__":
